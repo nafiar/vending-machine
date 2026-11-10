@@ -380,57 +380,65 @@ func TestPurchase_Create_turnsCoilOnce(t *testing.T) {
 
 ---
 
-## 11. Target layout for this repo
+## 11. Layout of this repo
 
 ```
 internal/
-├── model/                      # Transaction, Slot, SlotMap, VendResult, errors, status constants
+├── architecture_test.go        # enforces §1: fails the build on an outward import
+├── model/                      # VendResult, SlotMap, TxState, JournalEntry, APIError, sentinel errors
 ├── common/
-│   ├── config/                 # ← internal/config
-│   ├── logx/                   # ← internal/logx
-│   └── httpx/                  # shared JSON/error response helpers (optional)
+│   ├── config/                 # config.json
+│   └── logx/                   # the rotating log file
 ├── repository/
-│   ├── coil/                   # ← internal/board  (port: coil.Repository)
+│   ├── coil/                   # port: coil.Repository (+ coil.Simulator)
 │   │   ├── coil.go
 │   │   ├── serial/             # the CH340 driver
 │   │   └── sim/                # the simulator
-│   ├── server/                 # ← internal/upstream  (port: server.Repository)
+│   ├── server/                 # port: server.Repository; every /api/machine/... path lives here
 │   │   ├── server.go
 │   │   └── http/               # the real HTTP client
-│   └── journal/                # ← internal/journal  (port: journal.Repository)
-│       ├── journal.go
-│       └── file/               # the on-disk implementation
+│   ├── journal/                # port: journal.Repository
+│   │   ├── journal.go
+│   │   └── file/               # the on-disk implementation
+│   └── imagecache/             # port: imagecache.Repository (product images kept on disk)
+│       ├── imagecache.go
+│       └── file/
 ├── usecase/
-│   ├── purchase/               # ← the vend/pay/report logic now inside internal/agent
-│   ├── catalog/                # ← catalog cache logic
-│   └── operator/               # ← operator login / restock
+│   ├── connection/             # is the server reachable / accepting this key? + pass-through forwarding
+│   ├── catalog/                # catalog cache, heartbeat, product images
+│   ├── purchase/               # create, pay → vend → result, report, journal recovery and flusher
+│   ├── operator/               # operator login / slots / restock
+│   └── status/                 # /api/health, the developer page, the simulator switch
 └── delivery/
-    └── http/                   # ← the http.Handler now inside internal/agent
-        ├── router.go
-        ├── purchase.go
-        ├── catalog.go
-        └── operator.go
-cmd/vending-machine/main.go     # composition root (already is one — keep it)
-internal/winsvc/                # platform glue; invoked from cmd, stays as-is
+    └── http/
+        ├── router.go           # every route
+        ├── catalog.go, purchase.go, operator.go, status.go
+        ├── request.go          # forwarding, request id, middleware
+        ├── response.go         # writeJSON / writeError, and writeErr: the one error → HTTP mapping
+        ├── handler_test.go     # unit: handlers with a fake usecase
+        └── e2e_test.go         # the whole agent wired as in main, against a fake vending-server
+cmd/vending-machine/main.go     # composition root
+internal/winsvc/                # platform glue; invoked from cmd
 web/                            # embedded kiosk assets, served by delivery/http
 ```
 
-### Migration note
+Beyond the original plan, three packages were needed:
 
-`internal/agent` is today a well-built *monolith of two layers*: HTTP handlers
-(**delivery**) plus purchase/catalog orchestration (**usecase**), over three
-repositories it already treats through interfaces (`board.Board` is a port!).
-Migration is mechanical, not a rewrite:
+- **`usecase/connection`**: every story reports what it saw of the server
+  (reachable, offline, key refused), and the kiosk's "Mesin offline" depends on
+  it. It is a usecase that the others depend on through its interface. Forwarding
+  lives there too, because each forwarded call updates that state.
+- **`usecase/status`**: the health check and the developer page read from
+  every other story. Putting them in one place keeps `purchase` and `catalog`
+  free of status-page code.
+- **`repository/imagecache`**: the image copy on disk is I/O, so it sits behind
+  a port like the journal does.
 
-1. Extract `model` first (pull the shared structs/constants out of `board`,
-   `agent`, `upstream`). Nothing depends inward on anything yet — safe.
-2. Rename `board`→`repository/coil`, `upstream`→`repository/server`,
-   `journal`→`repository/journal`; introduce the port interface at each root and
-   move the concrete type into a `serial/`/`http/`/`file/` subpackage.
-3. Split `agent/*.go`: handler halves → `delivery/http`, orchestration halves →
-   `usecase/<story>`. The existing `Options`-based constructor already injects
-   dependencies — reuse that wiring.
-4. Keep `agent_test.go`'s fakes; they become the usecase layer's mocks.
+Pass-through calls (create, cancel, report, operator, restock) stay raw bytes
+end to end (`model.ForwardRequest` → `model.Response`). The agent proxies the
+server's contract and doesn't own it, so those request shapes are documented
+as comments on the handlers instead of as DTO structs.
 
-Do it one slice at a time (start with `catalog` — it's read-only), keeping the
-build green between steps.
+Mocks are hand-written fakes for now (`_test.go` files). When `go.uber.org/mock`
+is added to `go.mod`, put the `//go:generate mockgen` directive on each port file
+as in §3.1.

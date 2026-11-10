@@ -20,13 +20,17 @@ You can test the whole thing on your Mac first, with the simulator in place of t
 
 | Folder | What is in it |
 | --- | --- |
-| `cmd/vending-machine` | The program and its commands (`run`, `check`, `ports`, `vend`, `service`) |
-| `internal/agent` | The purchase flow, the journal recovery, the catalog cache, the forwarding to the server |
-| `internal/board` | The motor board driver (echo + END protocol) and the simulator |
-| `internal/journal` | The on-disk journal: one small file per unfinished purchase |
+| `cmd/vending-machine` | The program and its commands (`run`, `check`, `ports`, `vend`, `service`); wires the layers together |
+| `internal/model` | Plain data shared by every layer: vends, slots, transactions, journal entries, business errors |
+| `internal/common` | Config (`config.json`) and the log |
+| `internal/repository` | The outside world behind interfaces: the motor board (`coil/serial`, `coil/sim`), the server (`server/http`), the on-disk journal (`journal/file`), the image cache |
+| `internal/usecase` | The business rules: `purchase` (pay, vend, journal recovery), `catalog`, `operator`, `connection`, `status` |
+| `internal/delivery/http` | The HTTP API the kiosk page calls; every route is in `router.go` |
 | `web/kiosk` | The kiosk page (HTML, CSS, JavaScript), built into the program |
 | `web/dev` | The developer page: the kiosk in a phone-sized frame, plus the simulator controls |
 | `scripts/windows` | `start-kiosk.cmd`, which opens Edge in kiosk mode at logon |
+
+The layering rules are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
