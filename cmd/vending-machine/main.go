@@ -2,6 +2,9 @@
 // machine's PC: it serves the kiosk page to Edge at http://127.0.0.1:8080,
 // talks to the vending server with the machine's key, and drives the motor
 // board on the COM port.
+//
+// This file is the composition root (docs/ARCHITECTURE.md §7): the only place
+// that builds concrete repositories and wires them into the usecases.
 package main
 
 import (
@@ -22,12 +25,21 @@ import (
 	"syscall"
 	"time"
 
-	"vending-machine/internal/agent"
-	"vending-machine/internal/board"
-	"vending-machine/internal/config"
-	"vending-machine/internal/journal"
-	"vending-machine/internal/logx"
-	"vending-machine/internal/upstream"
+	"vending-machine/internal/common/config"
+	"vending-machine/internal/common/logx"
+	delivery "vending-machine/internal/delivery/http"
+	"vending-machine/internal/model"
+	"vending-machine/internal/repository/coil"
+	"vending-machine/internal/repository/coil/serial"
+	"vending-machine/internal/repository/coil/sim"
+	imagefile "vending-machine/internal/repository/imagecache/file"
+	journalfile "vending-machine/internal/repository/journal/file"
+	serverhttp "vending-machine/internal/repository/server/http"
+	"vending-machine/internal/usecase/catalog"
+	"vending-machine/internal/usecase/connection"
+	"vending-machine/internal/usecase/operator"
+	"vending-machine/internal/usecase/purchase"
+	"vending-machine/internal/usecase/status"
 	"vending-machine/internal/winsvc"
 	"vending-machine/web"
 )
@@ -132,15 +144,20 @@ func loadConfig(path string) (config.Config, error) {
 	return config.Load(found)
 }
 
-func newBoard(cfg config.Config, port string, forceSim bool) (board.Board, *board.Sim, error) {
+// newBoard builds the coil driver: the simulator, or the board on the serial
+// port. The simulator comes back a second time, as the switchable port.
+func newBoard(cfg config.Config, port string, forceSim bool) (coil.Repository, coil.Simulator, error) {
 	if cfg.Board == "sim" || forceSim {
-		s, err := board.NewSim(cfg.Slots, cfg.SimMode, cfg.SimTurn())
-		return s, s, err
+		s, err := sim.New(cfg.Slots, cfg.SimMode, cfg.SimTurn())
+		if err != nil {
+			return nil, nil, err
+		}
+		return s, s, nil
 	}
 	if port == "" {
 		port = cfg.SerialPort
 	}
-	return board.NewSerial(port, cfg.Slots), nil, nil
+	return serial.New(port, cfg.Slots), nil, nil
 }
 
 // ---------------------------------------------------------------- run
@@ -161,7 +178,7 @@ func runAgent(ctx context.Context, args []string, console bool) error {
 	defer logFile.Close()
 	log.Info("starting", "version", version, "config", cfg.Path, "server", cfg.ServerURL, "board", cfg.Board, "slots", cfg.Slots.String())
 
-	j, problems, err := journal.Open(filepath.Join(cfg.DataDir, "journal"))
+	j, problems, err := journalfile.New(filepath.Join(cfg.DataDir, "journal"))
 	if err != nil {
 		log.Error("journal", "err", err)
 		return fmt.Errorf("journal: %w", err)
@@ -170,13 +187,13 @@ func runAgent(ctx context.Context, args []string, console bool) error {
 		log.Error("journal: a damaged file was set aside", "problem", p)
 	}
 
-	b, sim, err := newBoard(cfg, "", false)
+	b, simulator, err := newBoard(cfg, "", false)
 	if err != nil {
 		return err
 	}
 	defer b.Close()
 
-	srv, err := upstream.New(cfg.ServerURL, cfg.MachineKey, cfg.InsecureTLS, version)
+	srv, err := serverhttp.New(cfg.ServerURL, cfg.MachineKey, cfg.InsecureTLS, version)
 	if err != nil {
 		return err
 	}
@@ -184,11 +201,25 @@ func runAgent(ctx context.Context, args []string, console bool) error {
 		log.Warn("insecureSkipVerify is on: the server's certificate is not checked (only for a self-signed demo server)")
 	}
 
-	a := agent.New(agent.Options{
-		Config: cfg, Board: b, Sim: sim, Journal: j, Server: srv, Log: log, Web: web.Files, Version: version,
+	// Usecases get repository interfaces; delivery gets usecase interfaces.
+	conn := connection.New(srv, log, 0)
+	catalogUC := catalog.New(catalog.Deps{
+		Server: srv, Images: imagefile.New(filepath.Join(cfg.DataDir, "cache", "uploads")), Connection: conn, Log: log,
+		Heartbeat: cfg.Heartbeat(),
+	})
+	purchaseUC := purchase.New(purchase.Deps{
+		Coil: b, Journal: j, Server: srv, Connection: conn, Catalog: catalogUC, Log: log,
 		Exit: func(code int) { logFile.Close(); os.Exit(code) },
 	})
-	a.Recover()
+	operatorUC := operator.New(conn, catalogUC, purchaseUC, log)
+	statusUC := status.New(status.Deps{
+		Config: cfg, Version: version, Coil: b, Sim: simulator, Connection: conn, Catalog: catalogUC, Purchase: purchaseUC, Log: log,
+	})
+	handler := delivery.New(delivery.Deps{
+		Purchase: purchaseUC, Catalog: catalogUC, Operator: operatorUC, Status: statusUC, Web: web.Files, Log: log,
+	})
+
+	purchaseUC.Recover()
 
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
@@ -197,9 +228,10 @@ func runAgent(ctx context.Context, args []string, console bool) error {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	a.Start(ctx)
+	catalogUC.Start(ctx)
+	purchaseUC.Start(ctx)
 
-	httpSrv := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second, ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelDebug)}
+	httpSrv := &http.Server{Handler: handler.Routes(), ReadHeaderTimeout: 10 * time.Second, ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelDebug)}
 	errc := make(chan error, 1)
 	go func() { errc <- httpSrv.Serve(ln) }()
 	base := "http://" + cfg.Listen
@@ -245,20 +277,18 @@ func check(args []string) error {
 	fmt.Printf("config    %s\n          server %s · listen %s · board %s · slots %s\n          data %s\n\n",
 		cfg.Path, cfg.ServerURL, cfg.Listen, cfg.Board, cfg.Slots.String(), cfg.DataDir)
 
-	srv, err := upstream.New(cfg.ServerURL, cfg.MachineKey, cfg.InsecureTLS, version)
+	srv, err := serverhttp.New(cfg.ServerURL, cfg.MachineKey, cfg.InsecureTLS, version)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	var hb struct {
-		CatalogVersion int64 `json:"catalogVersion"`
-	}
-	if _, err := srv.JSON(ctx, http.MethodPost, "/api/machine/heartbeat", struct{}{}, nil, &hb); err != nil {
+	catalogVersion, err := srv.Heartbeat(ctx)
+	if err != nil {
 		hint := ""
-		if e, isAPI := upstream.AsAPIError(err); isAPI && e.Code == "INVALID_MACHINE_KEY" {
+		if e, isAPI := model.AsAPIError(err); isAPI && e.Code == "INVALID_MACHINE_KEY" {
 			hint = " (the key is wrong: paste it again from the seed output or the admin web)"
-		} else if upstream.IsOffline(err) {
+		} else if model.IsOffline(err) {
 			hint = " (is the server running, and is serverUrl right?)"
 		}
 		report(false, "server", err.Error()+hint)
@@ -274,10 +304,14 @@ func check(args []string) error {
 				} `json:"product"`
 			} `json:"slots"`
 		}
-		if _, err := srv.JSON(ctx, http.MethodGet, "/api/machine/catalog", nil, nil, &cat); err != nil {
+		body, err := srv.Catalog(ctx)
+		if err == nil {
+			err = json.Unmarshal(body, &cat)
+		}
+		if err != nil {
 			report(false, "catalog", err.Error())
 		} else {
-			report(true, "server", fmt.Sprintf("reachable, machine key accepted: %s (%s), catalog version %d", cat.Machine.Code, cat.Machine.Name, hb.CatalogVersion))
+			report(true, "server", fmt.Sprintf("reachable, machine key accepted: %s (%s), catalog version %d", cat.Machine.Code, cat.Machine.Name, catalogVersion))
 			for _, s := range cat.Slots {
 				name, state := "(empty)", "sold out"
 				if s.Product != nil {
@@ -299,8 +333,8 @@ func check(args []string) error {
 	if err != nil {
 		return err
 	}
-	if serial, isSerial := b.(*board.Serial); isSerial {
-		if name, err := serial.Open(); err != nil {
+	if port, isSerial := b.(*serial.Serial); isSerial {
+		if name, err := port.Open(); err != nil {
 			report(false, "board", err.Error())
 		} else {
 			report(true, "board", "serial port "+name+" opened (no command sent; try `vending-machine vend 1`)")
@@ -310,7 +344,7 @@ func check(args []string) error {
 	}
 	b.Close()
 
-	j, problems, err := journal.Open(filepath.Join(cfg.DataDir, "journal"))
+	j, problems, err := journalfile.New(filepath.Join(cfg.DataDir, "journal"))
 	if err != nil {
 		report(false, "journal", err.Error())
 	} else {
@@ -329,7 +363,7 @@ func check(args []string) error {
 // ---------------------------------------------------------------- ports, vend
 
 func listPorts() error {
-	ports, err := board.ListPorts()
+	ports, err := serial.ListPorts()
 	if err != nil {
 		return err
 	}
