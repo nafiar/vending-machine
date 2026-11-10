@@ -1,0 +1,22 @@
+time=2026-11-03T20:36:08.034+07:00 level=INFO msg=starting version=dev config=/Users/nafiar/Projects/vending-machine/config.json server=https://35.219.98.32 board=sim slots="1=AA 2=BA 3=AB 4=BB 5=AC 6=BC"
+time=2026-11-03T20:36:08.035+07:00 level=INFO msg="kiosk ready" kiosk=http://127.0.0.1:8090/ developer_page=http://127.0.0.1:8090/dev/ board="simulator (ok)" log=/Users/nafiar/Projects/vending-machine/data/logs/vending-machine.log
+time=2026-11-03T20:36:08.134+07:00 level=INFO msg="server reachable" server=https://35.219.98.32
+time=2026-11-03T20:36:08.157+07:00 level=INFO msg="catalog loaded" machine=VM-03 name=Perpustakaan catalog_version=59
+time=2026-11-03T20:38:35.251+07:00 level=WARN msg="server unreachable; the kiosk shows \"Mesin offline\"" server=https://35.219.98.32 err="server unreachable: Post \"https://35.219.98.32/api/machine/heartbeat\": context deadline exceeded"
+time=2026-11-03T20:39:14.176+07:00 level=INFO msg="server reachable" server=https://35.219.98.32
+time=2026-11-03T20:40:18.086+07:00 level=INFO msg="transaction created" tx=1fbddc78-5bf7-47c8-b0e8-2cc8a4111267 slot=1 product="Gacha Starter Pack" amount=20000
+time=2026-11-03T20:40:18.087+07:00 level=INFO msg=request method=POST path=/api/transactions status=200 ms=54 request_id=vm-59cadefc3747eb7f
+time=2026-11-03T20:40:22.487+07:00 level=INFO msg=vend tx=1fbddc78-5bf7-47c8-b0e8-2cc8a4111267 slot=1 code=AA result=DISPENSED reason="" ack_ms=70 end_ms=2500 extra="" board="simulator (ok)"
+time=2026-11-03T20:40:22.597+07:00 level=INFO msg="result recorded" tx=1fbddc78-5bf7-47c8-b0e8-2cc8a4111267 status=DISPENSED reason=""
+time=2026-11-03T20:40:22.597+07:00 level=INFO msg=request method=POST path=/api/transactions/1fbddc78-5bf7-47c8-b0e8-2cc8a4111267/pay status=200 ms=2699 request_id=vm-edc1006f1c1128b7
+time=2026-11-03T20:42:05.966+07:00 level=WARN msg="server unreachable; the kiosk shows \"Mesin offline\"" server=https://35.219.98.32 err="server unreachable: Post \"https://35.219.98.32/api/machine/operator/login\": context deadline exceeded"
+time=2026-11-03T20:42:05.967+07:00 level=INFO msg=request method=POST path=/api/operator/login status=503 ms=6002 request_id=vm-4cb040809651b6c7
+time=2026-11-03T20:42:07.170+07:00 level=INFO msg="server reachable" server=https://35.219.98.32
+time=2026-11-03T20:42:18.127+07:00 level=INFO msg="operator logged in" username=budi
+time=2026-11-03T20:42:18.128+07:00 level=INFO msg=request method=POST path=/api/operator/login status=200 ms=129 request_id=vm-a68d2675ef33efa1
+time=2026-11-03T20:42:18.208+07:00 level=INFO msg=request method=GET path=/api/operator/slots status=200 ms=75 request_id=vm-55c6690d011ff802
+time=2026-11-03T20:42:34.736+07:00 level=INFO msg="restock visit saved" visit=362db712-0fdd-4976-bf85-dddf8e012ee9 catalog_version=60
+time=2026-11-03T20:42:34.737+07:00 level=INFO msg=request method=POST path=/api/restock-sessions status=200 ms=73 request_id=vm-67e2adecdf988adb
+time=2026-11-03T20:42:34.769+07:00 level=INFO msg=request method=POST path=/api/operator/logout status=200 ms=29 request_id=vm-cad8f1e084934e8f
+time=2026-11-03T20:48:55.599+07:00 level=INFO msg="stopping: finishing any purchase in progress"
+time=2026-11-03T20:48:55.600+07:00 level=INFO msg=stopped
